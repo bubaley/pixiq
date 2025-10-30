@@ -414,3 +414,53 @@ def test_get_image_hash():
     rgba_hash = Pixiq.get_image_hash(rgba_img)
     assert isinstance(rgba_hash, str)
     assert len(rgba_hash) == 64
+
+
+def test_hash_functionality_in_compression():
+    """Test hash functionality in compression and thumbnail generation."""
+    test_img = create_test_image(300, 200)
+
+    # Test with SHA1 hash
+    result_sha1 = Pixiq.compress(input=test_img, perceptual_quality=0.85, max_size=250, hash_type='sha1')
+
+    # Verify SHA1 hash properties
+    assert result_sha1.hash_type == 'sha1'
+    assert len(result_sha1.hash) == 40  # SHA1 hex length
+    assert all(c in '0123456789abcdef' for c in result_sha1.hash)
+    assert isinstance(result_sha1.hash, str)
+
+    # Test thumbnail generation maintains hash type
+    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+        thumb_result = result_sha1.save_thumbnail(max_size=100, output=tmp.name)
+
+        assert thumb_result.hash_type == 'sha1'
+        assert len(thumb_result.hash) == 40
+        assert all(c in '0123456789abcdef' for c in thumb_result.hash)
+        assert isinstance(thumb_result.hash, str)
+
+        # Different images should have different hashes
+        assert result_sha1.hash != thumb_result.hash
+
+    # Test with SHA256 hash
+    result_sha256 = Pixiq.compress(input=test_img, perceptual_quality=0.85, max_size=250, hash_type='sha256')
+
+    # Verify SHA256 hash properties
+    assert result_sha256.hash_type == 'sha256'
+    assert len(result_sha256.hash) == 64  # SHA256 hex length
+    assert all(c in '0123456789abcdef' for c in result_sha256.hash)
+    assert isinstance(result_sha256.hash, str)
+
+    # Test thumbnail generation maintains hash type
+    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+        thumb_result_sha256 = result_sha256.save_thumbnail(max_size=100, output=tmp.name)
+
+        assert thumb_result_sha256.hash_type == 'sha256'
+        assert len(thumb_result_sha256.hash) == 64
+        assert all(c in '0123456789abcdef' for c in thumb_result_sha256.hash)
+        assert isinstance(thumb_result_sha256.hash, str)
+
+        # Different images should have different hashes
+        assert result_sha256.hash != thumb_result_sha256.hash
+
+    # SHA1 and SHA256 hashes should be different even for same image
+    assert result_sha1.hash != result_sha256.hash

@@ -16,6 +16,7 @@ class CompressionResult:
     iterations_info: list[dict]
     selected_quality: int
     hash: str
+    hash_type: str
     file_size: int
     fmt: str
     extra_save_args: dict
@@ -86,6 +87,7 @@ class Pixiq:
         max_size: Optional[int] = None,
         max_iter: int = 5,
         format: Optional[str] = None,
+        hash_type: str = 'sha256',
     ) -> CompressionResult:
         # Input validation
         if not isinstance(input, Image.Image):
@@ -163,7 +165,7 @@ class Pixiq:
                     'psnr': current_psnr,
                     'error': error,
                     'file_size': file_size,
-                    'hash': Pixiq.get_image_hash(comp),
+                    'hash': Pixiq.get_image_hash(comp, hash_type=hash_type),
                 }
             )
 
@@ -194,7 +196,7 @@ class Pixiq:
         # Get compressed image and hash
         with Image.open(compressed_buffer) as compressed_image:
             compressed_copy = compressed_image.copy()
-            final_hash = Pixiq.get_image_hash(compressed_image)
+            final_hash = Pixiq.get_image_hash(compressed_image, hash_type=hash_type)
 
         # Save to the actual output if specified
         Pixiq._save_output(compressed_buffer, output)
@@ -207,6 +209,7 @@ class Pixiq:
             file_size=file_size,
             fmt=fmt.lower(),
             extra_save_args=extra_save_args,
+            hash_type=hash_type,
         )
         return result
 
@@ -338,10 +341,11 @@ class Pixiq:
             compressed=image,
             iterations_info=[],  # No iteration info for resizing
             selected_quality=result.selected_quality,  # Keep original quality
-            hash=Pixiq.get_image_hash(image),
+            hash=Pixiq.get_image_hash(image, hash_type=result.hash_type),
             fmt=result.fmt,
             file_size=file_size,
             extra_save_args=result.extra_save_args.copy(),
+            hash_type=result.hash_type,
         )
 
         # Save to output if specified
@@ -350,5 +354,9 @@ class Pixiq:
         return new_result
 
     @staticmethod
-    def get_image_hash(image: Image.Image) -> str:
-        return hashlib.sha256(image.tobytes()).hexdigest()
+    def get_image_hash(image: Image.Image, hash_type: str = 'sha256') -> str:
+        if hash_type not in hashlib.algorithms_available:
+            raise ValueError(f"Hash type '{hash_type}' not supported.")
+        hasher = hashlib.new(hash_type)
+        hasher.update(image.tobytes())
+        return hasher.hexdigest()
