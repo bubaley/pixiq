@@ -109,6 +109,7 @@ result = Pixiq.compress(
     perceptual_quality=0.85,    # Target visual quality (0.0-1.0)
     max_size=2000,             # Resize if larger than 2000px
     format='WEBP',             # Force WEBP format
+    hash_type='sha1',          # Use SHA1 instead of default SHA256
     output='compressed.webp'   # Save to file
 )
 
@@ -116,6 +117,7 @@ result = Pixiq.compress(
 print(f"📊 Quality: {result.selected_quality}/100")
 print(f"📏 Dimensions: {result.dimensions}")
 print(f"💾 Size: {result.file_size_kb:.1f} KB")
+print(f"🔐 Hash ({result.hash_type}): {result.hash}")
 print(f"🎯 Achieved quality: {result.best_iteration['perceptual_quality']:.3f}")
 ```
 
@@ -151,6 +153,7 @@ The main method for intelligent image compression with automatic quality selecti
 | `max_size` | int | `None` | Maximum dimension (resizes if larger) |
 | `max_iter` | int | `5` | Maximum binary search iterations |
 | `format` | str | `None` | Force format: 'JPEG', 'PNG', 'WEBP', 'AVIF' |
+| `hash_type` | str | `'sha256'` | Hash algorithm: 'sha1', 'sha256', etc. |
 | `output` | str/BytesIO | `None` | Output file path or buffer |
 
 #### Returns
@@ -175,7 +178,8 @@ Container for compression results with convenient access methods.
 | `iterations_count` | int | Number of compression attempts |
 | `iterations_info` | List[dict] | Detailed info for each iteration |
 | `selected_quality` | int | Final compression quality (1-100) |
-| `hash` | str | SHA256 hash of compressed image |
+| `hash` | str | Hash of compressed image (SHA1/SHA256) |
+| `hash_type` | str | Hash algorithm used ('sha1', 'sha256') |
 | `file_size` | int | File size in bytes |
 | `fmt` | str | Image format ('jpeg', 'webp', etc.) |
 | `extra_save_args` | dict | Format-specific save parameters |
@@ -230,7 +234,7 @@ Pixiq uses a **smart binary search algorithm** to find the optimal compression q
 2. **📊 PSNR Analysis** - Calculate Peak Signal-to-Noise Ratio between original and compressed images
 3. **🧠 Perceptual Mapping** - Convert PSNR to perceptual quality using empirical formula
 4. **🎪 Best Match Selection** - Choose quality with minimum error from target perceptual quality
-5. **🔗 Efficient Hashing** - Generate SHA256 hash from compressed data without re-encoding
+5. **🔗 Efficient Hashing** - Generate SHA1/SHA256 hash from compressed data without re-encoding
 
 ### Algorithm Visualization
 
