@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 
 [project]
 name = "pixiq"
-version = "0.2.0"
+version = "0.2.1"
 description = "Intelligent image compression library with perceptual quality optimization"
 readme = "README.md"
 keywords = [ "avif", "compression", "image", "jpeg", "perceptual", "quality", "webp" ]
