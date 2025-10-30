@@ -81,12 +81,7 @@ def test_compress_with_output():
     test_img = create_test_image(300, 200)
 
     with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-        result = Pixiq.compress(
-            input=test_img,
-            perceptual_quality=0.85,
-            max_size=250,
-            output=tmp.name
-        )
+        result = Pixiq.compress(input=test_img, perceptual_quality=0.85, max_size=250, output=tmp.name)
 
         # Verify file was created and result is valid
         assert result.selected_quality > 0
@@ -98,15 +93,15 @@ def test_compress_validation():
     import pytest
 
     # Test invalid perceptual_quality
-    with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+    with pytest.raises(ValueError, match='between 0.0 and 1.0'):
         Pixiq.compress(Image.new('RGB', (100, 100)), perceptual_quality=1.5)
 
     # Test invalid tolerance
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match='must be positive'):
         Pixiq.compress(Image.new('RGB', (100, 100)), tolerance=-0.1)
 
     # Test invalid max_size
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match='must be positive'):
         Pixiq.compress(Image.new('RGB', (100, 100)), max_size=-100)
 
 
@@ -118,7 +113,7 @@ def test_save_thumbnail_validation():
     result = Pixiq.compress(input=test_img, perceptual_quality=0.8)
 
     # Test invalid max_size
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match='must be positive'):
         result.save_thumbnail(max_size=-50)
 
 
