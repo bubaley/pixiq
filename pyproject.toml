@@ -1,0 +1,92 @@
+[build-system]
+build-backend = "hatchling.build"
+
+requires = [ "hatchling" ]
+
+[project]
+name = "pixiq"
+version = "0.1.0"
+description = "Intelligent image compression library with perceptual quality optimization"
+readme = "README.md"
+keywords = [ "avif", "compression", "image", "jpeg", "perceptual", "quality", "webp" ]
+license = { file = "LICENSE" }
+maintainers = [ { name = "bubaley", email = "bubaley.fu@gmail.com" } ]
+authors = [ { name = "bubaley", email = "bubaley.fu@gmail.com" } ]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "numpy>=2.0.2",
+    "pillow>=9.0.0",
+    "pillow-avif-plugin>=1.3.0",
+]
+
+urls.Documentation = "https://github.com/bubaley/pixiq#readme"
+urls.Homepage = "https://github.com/bubaley/pixiq"
+urls.Repository = "https://github.com/bubaley/pixiq.git"
+
+[dependency-groups]
+dev = [
+    "coverage>=7.10.7",
+    "pre-commit>=4.3.0",
+    "pytest>=8.4.2",
+    "ruff>=0.14.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [ "pixiq" ]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+indent-width = 4
+fix = true
+format.quote-style = "single"
+format.line-ending = "auto"
+format.skip-magic-trailing-comma = false
+lint.extend-select = [ "I" ]
+lint.extend-per-file-ignores."core/settings/*.py" = [ "F403", "F405" ]
+lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = [ "tests" ]
+pythonpath = [ "." ]
+
+[tool.coverage.run]
+branch = true
+source = [ "pixiq" ]
+omit = [
+    "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 90
+
+[tool.coverage.paths]
+source = [
+    "pixiq",
+    ".*/site-packages/pixiq",
+]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+
+[tool.bandit]
+skips = [ "B101" ]
+exclude_dirs = [ "tests" ]
