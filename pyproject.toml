@@ -81,7 +81,7 @@ fail_under = 90
 [tool.coverage.paths]
 source = [
     "pixiq",
-    ".*/site-packages/pixiq",
+    ".*/site-packages/",
 ]
 
 [tool.pyright]
