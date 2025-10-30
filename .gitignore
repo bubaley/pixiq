@@ -140,7 +140,6 @@ dmypy.json
 Thumbs.db
 
 # Test files
-test_*.*
 *.avif
 *.jpg
 *.png
