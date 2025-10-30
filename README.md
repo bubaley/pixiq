@@ -4,7 +4,7 @@
 
 **Intelligently compress images while preserving visual quality**
 
-[![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#testing)
 
@@ -40,6 +40,14 @@
 
 ### From PyPI (Recommended)
 
+**Using uv (fastest):**
+```bash
+uv add pixiq
+# or
+uv pip install pixiq
+```
+
+**Using pip:**
 ```bash
 pip install pixiq
 ```
@@ -49,15 +57,23 @@ pip install pixiq
 ```bash
 git clone https://github.com/yourusername/pixiq.git
 cd pixiq
+
+# Using uv
+uv sync --dev
+uv pip install -e .
+
+# Using pip
 pip install -e .
 ```
 
 ### Requirements
 
-- Python 3.8+
-- PIL (Pillow)
-- NumPy
-- pillow-avif (for AVIF support)
+- Python 3.9+
+- PIL (Pillow) - Image processing
+- NumPy - Array operations
+- pillow-avif-plugin - AVIF format support
+
+**💡 Tip:** [uv](https://github.com/astral-sh/uv) is significantly faster than pip and provides better dependency management.
 
 ---
 
@@ -286,15 +302,23 @@ AVIF      75         156 KB   1.2s
 Run the comprehensive test suite:
 
 ```bash
-# Install development dependencies
-pip install pytest
+# Install development dependencies (using uv - recommended)
+uv sync --dev
+
+# Or using pip
+pip install -e ".[dev]"
 
 # Run tests
+uv run pytest tests/
+
+# Or using pytest directly
 pytest tests/
 
 # Or run manually
 python -c "from tests.test_pixiq import *; test_basic_compression()"
 ```
+
+**💡 Tip:** Using `uv sync --dev` is the fastest way to set up the development environment!
 
 ---
 
@@ -320,6 +344,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 - Built with [Pillow](https://python-pillow.org/) for image processing
 - Uses [NumPy](https://numpy.org/) for efficient array operations
+- Powered by [uv](https://github.com/astral-sh/uv) for lightning-fast package management
 - Inspired by modern image optimization techniques
 
 ---
