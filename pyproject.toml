@@ -12,7 +12,7 @@ keywords = [ "avif", "compression", "image", "jpeg", "perceptual", "quality", "w
 license = { file = "LICENSE" }
 maintainers = [ { name = "bubaley", email = "bubaley.fu@gmail.com" } ]
 authors = [ { name = "bubaley", email = "bubaley.fu@gmail.com" } ]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
