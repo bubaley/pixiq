@@ -318,10 +318,6 @@ class Pixiq:
         if max_size <= 0:
             raise ValueError('Max size must be positive')
 
-        if max_size > max(result.compressed.size):
-            # No need to resize if new size is larger than current
-            return result
-
         # Create a copy of the compressed image and resize it
         resized_image = result.compressed.copy()
         if max_size < max(resized_image.size):
