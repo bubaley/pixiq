@@ -1,12 +1,14 @@
 import hashlib
 import io
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Union
 
 import numpy as np
 import pillow_avif  # noqa: F401
 from PIL import Image
 
+from .photo_score import photo_score
 from .psnr import psnr
 
 
@@ -20,6 +22,7 @@ class CompressionResult:
     file_size: int
     fmt: str
     extra_save_args: dict
+    tile_size_ratio: float
 
     def save_thumbnail(self, max_size: int, output: Optional[Union[str, io.BytesIO]] = None) -> 'CompressionResult':
         """Save a thumbnail version of the compressed image with a new maximum size."""
@@ -59,7 +62,7 @@ class CompressionResult:
 
 class Pixiq:
     # Constants for quality conversion
-    PSNR_TO_PERCEPTUAL_QUALITY_RATIO = 0.025  # Empirical ratio to convert PSNR to perceptual quality
+    PSNR_TO_PERCEPTUAL_QUALITY_RATIO = 0.02767  # Empirical ratio to convert PSNR to perceptual quality
 
     # Default quality bounds
     DEFAULT_MIN_QUALITY = 1
@@ -88,6 +91,8 @@ class Pixiq:
         max_iter: int = 5,
         format: Optional[str] = None,
         hash_type: str = 'sha256',
+        tile_size_ratio: Optional[float] = None,
+        top_tiles_count: int = 5,
     ) -> CompressionResult:
         # Input validation
         if not isinstance(input, Image.Image):
@@ -108,6 +113,10 @@ class Pixiq:
             raise ValueError('Max size must be positive')
         if max_iter <= 0:
             raise ValueError('Max iterations must be positive')
+        if tile_size_ratio is not None and (tile_size_ratio <= 0.0 or tile_size_ratio > 1.0):
+            raise ValueError('Tile size ratio must be between 0.0 and 1.0')
+        if top_tiles_count <= 0:
+            raise ValueError('Top tiles count must be positive')
 
         # Detect format first to determine alpha support
         fmt, extra_save_args = Pixiq._detect_format(input, format, output)
@@ -124,6 +133,13 @@ class Pixiq:
         if max_size:
             img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
         orig_array = np.array(img)
+
+        # Auto-detect tile size ratio if not provided
+        if tile_size_ratio is None:
+            tile_size_ratio = Pixiq._detect_optimal_tile_size(orig_array)
+
+        # Precompute tile positions with most colors once
+        selected_tile_indices = Pixiq._precompute_tile_positions(orig_array, tile_size_ratio, top_tiles_count)
 
         low = min_quality if min_quality is not None else Pixiq.DEFAULT_MIN_QUALITY
         high = max_quality if max_quality is not None else Pixiq.DEFAULT_MAX_QUALITY
@@ -154,8 +170,12 @@ class Pixiq:
                 continue
 
             comp_array = np.array(comp)
-            current_psnr = psnr(orig_array, comp_array)
+            current_psnr = Pixiq._calculate_tile_based_psnr(
+                orig_array, comp_array, tile_size_ratio, selected_tile_indices
+            )
+            # current_psnr = psnr(orig_array, comp_array)
             current_perceptual_quality = Pixiq.PSNR_TO_PERCEPTUAL_QUALITY_RATIO * current_psnr
+            print(f'current_perceptual_quality: {current_perceptual_quality} current_psnr: {current_psnr}')
             error = abs(current_perceptual_quality - perceptual_quality)
 
             iterations_info.append(
@@ -210,6 +230,7 @@ class Pixiq:
             fmt=fmt.lower(),
             extra_save_args=extra_save_args,
             hash_type=hash_type,
+            tile_size_ratio=tile_size_ratio,
         )
         return result
 
@@ -347,12 +368,194 @@ class Pixiq:
             file_size=file_size,
             extra_save_args=result.extra_save_args.copy(),
             hash_type=result.hash_type,
+            tile_size_ratio=result.tile_size_ratio,
         )
 
         # Save to output if specified
         Pixiq._save_output(compressed_buffer, output)
 
         return new_result
+
+    @staticmethod
+    def _split_into_tiles(
+        image_array: np.ndarray, tile_size_ratio: float = 0.1, overlap: bool = True
+    ) -> list[tuple[np.ndarray, tuple[int, int]]]:
+        """Split image into tiles of size tile_size_ratio.
+
+        Args:
+            image_array: Image array (H, W, C)
+            tile_size_ratio: Tile size ratio (default 0.1 = 10%)
+            overlap: If True, tiles overlap for more coverage
+
+        Returns:
+            List of (tile, (row, col)) tuples
+        """
+        height, width = image_array.shape[:2]
+        tile_height = max(1, int(height * tile_size_ratio))
+        tile_width = max(1, int(width * tile_size_ratio))
+        step_height = tile_height // 2 if overlap else tile_height
+        step_width = tile_width // 2 if overlap else tile_width
+
+        tiles = []
+        for row in range(0, height - tile_height + 1, step_height):
+            for col in range(0, width - tile_width + 1, step_width):
+                tile = image_array[row : row + tile_height, col : col + tile_width]
+                if tile.size > 0:
+                    tiles.append((tile, (row, col)))
+        return tiles
+
+    @staticmethod
+    def _count_unique_colors(tile: np.ndarray) -> int:
+        """Count unique colors in a tile.
+
+        Args:
+            tile: Tile array (H, W, C)
+
+        Returns:
+            Number of unique colors
+        """
+        if len(tile.shape) == 3:
+            pixels = tile.reshape(-1, tile.shape[2])
+            dtype = np.dtype((np.void, pixels.dtype.itemsize * pixels.shape[1]))
+            return len(np.unique(pixels.view(dtype)))
+        return len(np.unique(tile.flatten()))
+
+    @staticmethod
+    def _select_tiles_with_most_colors(
+        tiles: list[tuple[np.ndarray, tuple[int, int]]], top_n: Optional[int] = 5
+    ) -> list[tuple[np.ndarray, int]]:
+        """Select tiles with most unique colors, avoiding adjacent tiles.
+
+        Args:
+            tiles: List of (tile, coords) tuples
+            top_n: Number of tiles to select (None = all)
+
+        Returns:
+            Sorted list of (tile, index) tuples
+        """
+        tiles_with_color_count = [
+            (idx, tile, coords, Pixiq._count_unique_colors(tile)) for idx, (tile, coords) in enumerate(tiles)
+        ]
+        tiles_with_color_count.sort(key=lambda x: x[3], reverse=True)
+
+        # Select tiles avoiding adjacent ones with similar color counts
+        selected = []
+        if not tiles:
+            return []
+
+        # Calculate minimum distance based on tile size
+        tile_height, tile_width = tiles[0][0].shape[:2]
+        min_distance = max(tile_height, tile_width) * 1.5  # Minimum distance between tile centers
+
+        for idx, tile, coords, color_count in tiles_with_color_count:
+            if top_n is not None and len(selected) >= top_n:
+                break
+
+            # Check if tile is far enough from already selected tiles
+            is_far_enough = True
+            for sel_idx, sel_tile, sel_coords, sel_color_count in selected:
+                row1, col1 = coords
+                row2, col2 = sel_coords
+                distance = ((row1 - row2) ** 2 + (col1 - col2) ** 2) ** 0.5
+
+                # If tiles are close and have similar color counts, skip
+                if (
+                    distance < min_distance
+                    and abs(color_count - sel_color_count) < max(color_count, sel_color_count) * 0.15
+                ):
+                    is_far_enough = False
+                    break
+
+            if is_far_enough:
+                selected.append((idx, tile, coords, color_count))
+
+        return [(tile, idx) for idx, tile, _, _ in selected]
+
+    @staticmethod
+    def _detect_optimal_tile_size(image_array: np.ndarray) -> float:
+        """Detect optimal tile size: smaller for UI, larger for photos.
+
+        Uses photo_score to determine if image is more UI-like (low score)
+        or photo-like (high score) and adjusts tile size accordingly.
+        """
+        # Вычисляем photo_score для определения типа изображения
+        # photo_score возвращает 0.0 для UI-like и 1.0 для photo-like
+        start_time = datetime.now()
+        score = photo_score(image_array, debug=False)
+        end_time = datetime.now()
+        print(f'Photo score time: {end_time - start_time}')
+
+        # Инвертируем score для получения UI_score (высокий = UI, низкий = фото)
+        ui_score = 1.0 - score
+
+        # === Mapping to tile size based on photo_score ===
+        # UI (высокий ui_score): мелкие тайлы для точности
+        # Photo (низкий ui_score): крупные тайлы для эффективности
+        print(f'ui_score: {ui_score}')
+        if ui_score > 0.7:
+            return 0.05  # Чистый UI: мелкие тайлы
+        elif ui_score > 0.5:
+            return 0.08  # Смешанный / простой UI
+        elif ui_score > 0.3:
+            return 0.2  # Фото с чёткими краями
+        else:
+            return 0.3  # Сложные фото, градиенты
+
+    @staticmethod
+    def _precompute_tile_positions(
+        image_array: np.ndarray, tile_size_ratio: float, top_tiles_count: int
+    ) -> list[tuple[int, int]]:
+        """Precompute positions of tiles with most colors.
+
+        Args:
+            image_array: Image array (H, W, C)
+            tile_size_ratio: Tile size ratio
+            top_tiles_count: Number of tiles to select
+
+        Returns:
+            List of (row, col) coordinates
+        """
+        tiles = Pixiq._split_into_tiles(image_array, tile_size_ratio)
+        if not tiles:
+            return []
+        selected_tiles = Pixiq._select_tiles_with_most_colors(tiles, top_n=top_tiles_count)
+        if not selected_tiles:
+            return []
+        return [tiles[idx][1] for _, idx in selected_tiles]
+
+    @staticmethod
+    def _calculate_tile_based_psnr(
+        original: np.ndarray,
+        compressed: np.ndarray,
+        tile_size_ratio: float,
+        selected_tile_coords: list[tuple[int, int]],
+    ) -> float:
+        """Calculate PSNR using precomputed tile positions.
+
+        Args:
+            original: Original image array
+            compressed: Compressed image array
+            tile_size_ratio: Tile size ratio
+            selected_tile_coords: List of (row, col) coordinates
+
+        Returns:
+            Minimum PSNR among selected tiles
+        """
+        if not selected_tile_coords:
+            return psnr(original, compressed)
+
+        height, width = original.shape[:2]
+        tile_height = max(1, int(height * tile_size_ratio))
+        tile_width = max(1, int(width * tile_size_ratio))
+
+        psnr_values = []
+        for row, col in selected_tile_coords:
+            orig_tile = original[row : row + tile_height, col : col + tile_width]
+            comp_tile = compressed[row : row + tile_height, col : col + tile_width]
+            if orig_tile.shape == comp_tile.shape and orig_tile.size > 0:
+                psnr_values.append(psnr(orig_tile, comp_tile))
+
+        return min(psnr_values) if psnr_values else psnr(original, compressed)
 
     @staticmethod
     def get_image_hash(image: Image.Image, hash_type: str = 'sha256') -> str:
