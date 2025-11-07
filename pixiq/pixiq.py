@@ -324,7 +324,8 @@ class Pixiq:
 
         # Create a copy of the compressed image and resize it
         resized_image = result.compressed.copy()
-        resized_image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        if max_size < max(resized_image.size):
+            resized_image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
         # Compress resized image to bytes
         compressed_buffer, file_size = Pixiq._compress_to_bytes(
