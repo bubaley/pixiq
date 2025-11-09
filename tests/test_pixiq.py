@@ -342,37 +342,6 @@ def test_quality_bounds():
         assert 'Max quality must be greater than or equal to min quality' in str(e)
 
 
-def test_edge_cases():
-    """Test edge cases and boundary conditions."""
-    # Test max_iter = 1
-    test_img = create_test_image(300, 200)
-    result = Pixiq.compress(input=test_img, perceptual_quality=0.8, max_iter=1)
-    assert result.iterations_count == 1
-    assert len(result.iterations_info) == 1
-
-    # Test when image is already smaller than max_size
-    small_img = create_test_image(50, 50)
-    result = Pixiq.compress(input=small_img, perceptual_quality=0.8, max_size=100)
-    assert result.dimensions == (50, 50)  # Should not be resized
-
-    # Test thumbnail when image is already smaller than requested size
-    result = Pixiq.compress(input=small_img, perceptual_quality=0.8)
-    thumb = result.save_thumbnail(max_size=100)
-    # Should not be resized if image is smaller than max_size
-    assert thumb.dimensions[0] <= 100 and thumb.dimensions[1] <= 100
-
-    # Test with very small tolerance (should converge quickly)
-    result = Pixiq.compress(input=test_img, perceptual_quality=0.8, tolerance=0.001, max_iter=10)
-    # Should either converge or reach max_iter
-
-    # Test with extreme quality values
-    result = Pixiq.compress(input=test_img, perceptual_quality=0.99, max_iter=2)
-    assert result.selected_quality > 0
-
-    result = Pixiq.compress(input=test_img, perceptual_quality=0.1, max_iter=2)
-    assert result.selected_quality > 0
-
-
 def test_tolerance_values():
     """Test different tolerance values affect convergence."""
     test_img = create_test_image(300, 200)

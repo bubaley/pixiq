@@ -30,6 +30,8 @@
 
 ⚡ **Performance Optimized** - Fast compression with efficient memory usage
 
+🧩 **Tile-Based Quality Check** - PSNR analysis performed on image tiles for fast quality assessment
+
 🛡️ **Robust Validation** - Comprehensive input validation and error handling
 
 🔍 **Quality Metrics** - Detailed compression statistics and iteration info
@@ -231,7 +233,7 @@ thumbnail = result.save_thumbnail(max_size=500, output='thumb.webp')
 Pixiq uses a **smart binary search algorithm** to find the optimal compression quality:
 
 1. **🎯 Quality Search** - Binary search over quality range (1-100) to find optimal compression
-2. **📊 PSNR Analysis** - Calculate Peak Signal-to-Noise Ratio between original and compressed images
+2. **📊 Tile-Based PSNR Analysis** - Calculate Peak Signal-to-Noise Ratio on selected image tiles (not the entire image) for fast quality assessment. The algorithm automatically detects optimal tile size based on image type (UI vs photos) and selects tiles with the most color complexity for accurate quality measurement.
 3. **🧠 Perceptual Mapping** - Convert PSNR to perceptual quality using empirical formula
 4. **🎪 Best Match Selection** - Choose quality with minimum error from target perceptual quality
 5. **🔗 Efficient Hashing** - Generate SHA1/SHA256 hash from compressed data without re-encoding
