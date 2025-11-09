@@ -1,25 +1,42 @@
 import hashlib
 import io
+import os
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, TypedDict, Union
 
 import numpy as np
 import pillow_avif  # noqa: F401
 from PIL import Image
 
-from .psnr import psnr
+from .tiles import (
+    calculate_tile_based_psnr,
+    detect_optimal_tile_size,
+    precompute_tile_positions,
+)
+
+
+class IterationInfo(TypedDict):
+    """Information about a single compression iteration."""
+
+    quality: int
+    perceptual_quality: float
+    psnr: float
+    error: float
+    file_size: int
 
 
 @dataclass
 class CompressionResult:
     compressed: Image.Image
-    iterations_info: list[dict]
+    original: Image.Image
+    iterations_info: list[IterationInfo]
     selected_quality: int
     hash: str
     hash_type: str
     file_size: int
     fmt: str
     extra_save_args: dict
+    tile_size: int
 
     def save_thumbnail(self, max_size: int, output: Optional[Union[str, io.BytesIO]] = None) -> 'CompressionResult':
         """Save a thumbnail version of the compressed image with a new maximum size."""
@@ -40,11 +57,11 @@ class CompressionResult:
         return self.compressed.size
 
     @property
-    def best_iteration(self) -> Optional[dict]:
+    def best_iteration(self) -> Optional[IterationInfo]:
         """Get information about the best iteration found."""
         if not self.iterations_info:
             return None
-        return min(self.iterations_info, key=lambda x: x.get('error', float('inf')))
+        return min(self.iterations_info, key=lambda x: x['error'])
 
     def save(self, output: Union[str, io.BytesIO]) -> None:
         """Save the compressed image to the specified output."""
@@ -59,7 +76,7 @@ class CompressionResult:
 
 class Pixiq:
     # Constants for quality conversion
-    PSNR_TO_PERCEPTUAL_QUALITY_RATIO = 0.025  # Empirical ratio to convert PSNR to perceptual quality
+    PSNR_TO_PERCEPTUAL_QUALITY_RATIO = 0.0282  # Empirical ratio to convert PSNR to perceptual quality
 
     # Default quality bounds
     DEFAULT_MIN_QUALITY = 1
@@ -80,7 +97,7 @@ class Pixiq:
     def compress(
         input: Image.Image,
         output: Optional[Union[str, io.BytesIO]] = None,
-        perceptual_quality: float = 0.95,
+        perceptual_quality: float = 0.9,
         tolerance: float = 0.005,
         max_quality: Optional[int] = None,
         min_quality: Optional[int] = None,
@@ -88,6 +105,8 @@ class Pixiq:
         max_iter: int = 5,
         format: Optional[str] = None,
         hash_type: str = 'sha256',
+        tile_size: Optional[int] = None,
+        top_tiles_count: int = 5,
     ) -> CompressionResult:
         # Input validation
         if not isinstance(input, Image.Image):
@@ -108,6 +127,10 @@ class Pixiq:
             raise ValueError('Max size must be positive')
         if max_iter <= 0:
             raise ValueError('Max iterations must be positive')
+        if tile_size is not None and tile_size <= 0:
+            raise ValueError('Tile size must be positive')
+        if top_tiles_count <= 0:
+            raise ValueError('Top tiles count must be positive')
 
         # Detect format first to determine alpha support
         fmt, extra_save_args = Pixiq._detect_format(input, format, output)
@@ -121,9 +144,19 @@ class Pixiq:
         else:
             img = input.convert('RGB')
 
+        # Save original image before applying max_size (for thumbnail creation)
+        original_img = img.copy()
+
         if max_size:
             img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
         orig_array = np.array(img)
+
+        # Auto-detect tile size if not provided
+        if tile_size is None:
+            tile_size = detect_optimal_tile_size(orig_array)
+
+        # Precompute tile positions and slices with most colors once
+        selected_tile_indices, selected_tile_slices = precompute_tile_positions(orig_array, tile_size, top_tiles_count)
 
         low = min_quality if min_quality is not None else Pixiq.DEFAULT_MIN_QUALITY
         high = max_quality if max_quality is not None else Pixiq.DEFAULT_MAX_QUALITY
@@ -139,22 +172,23 @@ class Pixiq:
             iteration += 1
             mid = (low + high) // 2
 
-            buffer = io.BytesIO()
-            img.save(buffer, fmt, quality=mid, **extra_save_args)
+            buffer = Pixiq._compress_image_to_buffer(img, fmt, mid, extra_save_args)
+            # Optimization: save buffer size via tell() (faster than getvalue())
             file_size = buffer.tell()
             buffer.seek(0)
 
             try:
-                comp = Image.open(buffer)
-                comp = comp.convert(img.mode)
-            except Exception as e:
+                with Image.open(buffer) as comp_img:
+                    comp = comp_img.convert(img.mode)
+                    comp_array = np.array(comp)
+            except (OSError, ValueError):
                 # Skip invalid quality levels that can't be decoded
-                print(f'Warning: Failed to decode image with quality {mid}: {e}')
                 high = mid - 1
                 continue
 
-            comp_array = np.array(comp)
-            current_psnr = psnr(orig_array, comp_array)
+            current_psnr = calculate_tile_based_psnr(
+                orig_array, comp_array, tile_size, selected_tile_indices, selected_tile_slices
+            )
             current_perceptual_quality = Pixiq.PSNR_TO_PERCEPTUAL_QUALITY_RATIO * current_psnr
             error = abs(current_perceptual_quality - perceptual_quality)
 
@@ -165,14 +199,15 @@ class Pixiq:
                     'psnr': current_psnr,
                     'error': error,
                     'file_size': file_size,
-                    'hash': Pixiq.get_image_hash(comp, hash_type=hash_type),
                 }
             )
 
             last_valid_quality = mid  # Update last valid quality
 
             if error < best_error:
-                best_buffer = io.BytesIO(buffer.getvalue())  # Copy buffer data
+                # Optimization: save buffer data once instead of creating a copy
+                buffer_data = buffer.getvalue()
+                best_buffer = io.BytesIO(buffer_data)
                 best_size = file_size
                 best_error = error
                 best_quality = mid
@@ -193,16 +228,25 @@ class Pixiq:
             # Fallback: compress with last valid quality
             compressed_buffer, file_size = Pixiq._compress_to_bytes(img, fmt, last_valid_quality, extra_save_args)
 
+        # Save buffer data BEFORE opening image (PIL may close the buffer)
+        compressed_buffer.seek(0)
+        buffer_data = compressed_buffer.getvalue()
+
         # Get compressed image and hash
-        with Image.open(compressed_buffer) as compressed_image:
-            compressed_copy = compressed_image.copy()
-            final_hash = Pixiq.get_image_hash(compressed_image, hash_type=hash_type)
+        compressed_buffer_for_image = io.BytesIO(buffer_data)
+        compressed_image = Image.open(compressed_buffer_for_image)
+        compressed_copy = compressed_image.copy()
+        final_hash = Pixiq.get_image_hash(compressed_image, hash_type=hash_type)
+        compressed_image.close()
 
         # Save to the actual output if specified
-        Pixiq._save_output(compressed_buffer, output)
+        # Use saved buffer data instead of the buffer itself
+        compressed_buffer_for_save = io.BytesIO(buffer_data)
+        Pixiq._save_output(compressed_buffer_for_save, output)
 
         result = CompressionResult(
             compressed=compressed_copy,
+            original=original_img,
             iterations_info=iterations_info,
             selected_quality=best_quality if best_buffer is not None else last_valid_quality,
             hash=final_hash,
@@ -210,14 +254,13 @@ class Pixiq:
             fmt=fmt.lower(),
             extra_save_args=extra_save_args,
             hash_type=hash_type,
+            tile_size=tile_size,
         )
         return result
 
     @staticmethod
     def _detect_format_from_source(image: Image.Image) -> str:
         """Detect format from image filename or format attribute."""
-        import os
-
         filename = getattr(image, 'filename', None)
         if filename:
             ext = os.path.splitext(filename)[1].lower()
@@ -238,8 +281,6 @@ class Pixiq:
             fmt = format.upper()
         elif isinstance(output, str):
             # Try to get format from output path first, then fallback to image
-            import os
-
             ext = os.path.splitext(output)[1].lower()
             fmt = Pixiq.FORMAT_MAP.get(ext)
             if fmt is None:
@@ -247,6 +288,10 @@ class Pixiq:
         else:
             # No output path specified, detect from image
             fmt = Pixiq._detect_format_from_source(image)
+
+        # Validate format
+        if fmt is None or fmt not in {'JPEG', 'PNG', 'WEBP', 'AVIF'}:
+            fmt = 'JPEG'  # Default fallback
 
         # Normalize format
         if fmt == 'JPG':
@@ -257,12 +302,50 @@ class Pixiq:
         if fmt == 'JPEG':
             extra_save_args = dict(optimize=True, progressive=True)
         elif fmt == 'WEBP':
-            extra_save_args = dict(method=6)
+            extra_save_args = dict(method=4)
         elif fmt == 'AVIF':
             extra_save_args = dict(speed=6)
-        # PNG doesn't use quality parameter
+        elif fmt == 'PNG':
+            extra_save_args = dict(optimize=True, compress_level=5)
 
         return fmt, extra_save_args
+
+    @staticmethod
+    def _compress_image_to_buffer(
+        image: Image.Image,
+        fmt: str,
+        quality: int,
+        extra_save_args: dict,
+    ) -> io.BytesIO:
+        """Compress image to BytesIO buffer with format-specific handling."""
+        buffer = io.BytesIO()
+        try:
+            if fmt.upper() == 'PNG':
+                colors = Pixiq._quality_to_colors(quality)
+                quantized = image.quantize(colors=colors)
+                quantized.save(buffer, fmt, **extra_save_args)
+            else:
+                image.save(buffer, fmt, quality=quality, **extra_save_args)
+        except (OSError, ValueError) as e:
+            raise OSError(f'Failed to compress image: {e}') from e
+        return buffer
+
+    @staticmethod
+    def _quality_to_colors(quality: int) -> int:
+        """Convert quality (1-100) to number of colors for PNG quantize.
+
+        Maps quality to color count using exponential formula:
+        quality 1 -> 2 colors, quality 100 -> 256 colors
+
+        Args:
+            quality: Quality value from 1 to 100
+
+        Returns:
+            Number of colors (2-256)
+        """
+        x = max(0, min(100, quality))
+        p = 1 + 7 * (x / 100)  # Exponential mapping: 2^1 to 2^8
+        return int(2**p)
 
     @staticmethod
     def _compress_to_bytes(
@@ -272,14 +355,11 @@ class Pixiq:
         extra_save_args: dict,
     ) -> tuple[io.BytesIO, int]:
         """Compress image to BytesIO buffer and return it with file size."""
-        buffer = io.BytesIO()
-        try:
-            final_image.save(buffer, fmt, quality=quality, **extra_save_args)
-            file_size = buffer.tell()
-            buffer.seek(0)
-            return buffer, file_size
-        except Exception as e:
-            raise OSError(f'Failed to compress image: {e}') from e
+        buffer = Pixiq._compress_image_to_buffer(final_image, fmt, quality, extra_save_args)
+        # Use tell() to get size (faster than getvalue())
+        file_size = buffer.tell()
+        buffer.seek(0)
+        return buffer, file_size
 
     @staticmethod
     def _save_output(
@@ -294,10 +374,11 @@ class Pixiq:
                     with open(output, 'wb') as f:
                         f.write(compressed_buffer.getvalue())
                 elif isinstance(output, io.BytesIO):
-                    # Copy buffer to output BytesIO
+                    # Optimization: save data once instead of double getvalue() call
+                    buffer_data = compressed_buffer.getvalue()
                     output.seek(0)
                     output.truncate(0)
-                    output.write(compressed_buffer.getvalue())
+                    output.write(buffer_data)
                     output.seek(0)
                 else:
                     raise TypeError('Output must be a file path (str) or BytesIO buffer')
@@ -310,7 +391,7 @@ class Pixiq:
         max_size: int,
         output: Optional[Union[str, io.BytesIO]] = None,
     ) -> CompressionResult:
-        """Save a thumbnail version of a compressed image with a new maximum size."""
+        """Save a thumbnail version using the original image with preserved compression parameters."""
         # Input validation
         if not isinstance(result, CompressionResult):
             raise TypeError('Result must be a CompressionResult instance')
@@ -318,31 +399,40 @@ class Pixiq:
         if max_size <= 0:
             raise ValueError('Max size must be positive')
 
-        # Create a copy of the compressed image and resize it
-        resized_image = result.compressed.copy()
+        # Use original image instead of compressed
+        original_img = result.original
+
+        # Create a copy of the original image and resize it
+        resized_image = original_img.copy()
         if max_size < max(resized_image.size):
             resized_image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
-        # Compress resized image to bytes
+        # Compress resized image to bytes using the same quality and format as original compression
         compressed_buffer, file_size = Pixiq._compress_to_bytes(
             resized_image,
             result.fmt,
             result.selected_quality,
             result.extra_save_args,
         )
-        image = Image.open(compressed_buffer)
+
+        # Get compressed image and hash
+        with Image.open(compressed_buffer) as compressed_image:
+            compressed_copy = compressed_image.copy()
+            final_hash = Pixiq.get_image_hash(compressed_image, hash_type=result.hash_type)
 
         # Create new CompressionResult with the resized image
-        # Note: iterations_count and iterations_info are not copied since resizing doesn't involve quality search
+        # Save original image (before resizing) for possible future thumbnails
         new_result = CompressionResult(
-            compressed=image,
+            compressed=compressed_copy,
+            original=original_img,  # Save original image
             iterations_info=[],  # No iteration info for resizing
-            selected_quality=result.selected_quality,  # Keep original quality
-            hash=Pixiq.get_image_hash(image, hash_type=result.hash_type),
+            selected_quality=result.selected_quality,
+            hash=final_hash,
             fmt=result.fmt,
             file_size=file_size,
             extra_save_args=result.extra_save_args.copy(),
             hash_type=result.hash_type,
+            tile_size=result.tile_size,
         )
 
         # Save to output if specified
@@ -352,6 +442,18 @@ class Pixiq:
 
     @staticmethod
     def get_image_hash(image: Image.Image, hash_type: str = 'sha256') -> str:
+        """Calculate hash of image pixel data.
+
+        Args:
+            image: PIL Image to hash
+            hash_type: Hash algorithm name (e.g., 'sha256', 'sha1')
+
+        Returns:
+            Hexadecimal hash string
+
+        Raises:
+            ValueError: If hash_type is not supported
+        """
         if hash_type not in hashlib.algorithms_available:
             raise ValueError(f"Hash type '{hash_type}' not supported.")
         hasher = hashlib.new(hash_type)
