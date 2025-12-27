@@ -1,7 +1,9 @@
 import hashlib
 import io
+import mimetypes
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, TypedDict, Union
 
 import numpy as np
@@ -37,6 +39,8 @@ class CompressionResult:
     fmt: str
     extra_save_args: dict
     tile_size: int
+    filename: Optional[str]
+    content_type: str
 
     def save_thumbnail(self, max_size: int, output: Optional[Union[str, io.BytesIO]] = None) -> 'CompressionResult':
         """Save a thumbnail version of the compressed image with a new maximum size."""
@@ -244,6 +248,10 @@ class Pixiq:
         compressed_buffer_for_save = io.BytesIO(buffer_data)
         Pixiq._save_output(compressed_buffer_for_save, output)
 
+        # Generate filename and content_type
+        filename = Pixiq._generate_filename(input, output, fmt)
+        content_type = Pixiq._get_content_type(fmt)
+
         result = CompressionResult(
             compressed=compressed_copy,
             original=original_img,
@@ -255,6 +263,8 @@ class Pixiq:
             extra_save_args=extra_save_args,
             hash_type=hash_type,
             tile_size=tile_size,
+            filename=filename,
+            content_type=content_type,
         )
         return result
 
@@ -269,6 +279,26 @@ class Pixiq:
             return image.format.upper()
         else:
             return 'JPEG'
+
+    @staticmethod
+    def _generate_filename(image: Image.Image, output: Optional[Union[str, io.BytesIO]], fmt: str) -> Optional[str]:
+        """Generate output filename based on input image filename and format."""
+        if isinstance(output, str):
+            path = Path(output)
+            return f'{path.stem}{path.suffix}'  # Сохраняет оригинальное имя+расширение
+
+        original_filename = getattr(image, 'filename', None)
+        if not original_filename:
+            return None
+
+        name = Path(original_filename).stem
+        return f'{name}.{fmt.lower()}'
+
+    @staticmethod
+    def _get_content_type(fmt: str) -> str:
+        """Get MIME content type for the given format using mimetypes."""
+        content_type, _ = mimetypes.guess_type(f'dummy.{fmt.lower()}')
+        return content_type or 'image/jpeg'
 
     @staticmethod
     def _detect_format(
@@ -302,7 +332,7 @@ class Pixiq:
         if fmt == 'JPEG':
             extra_save_args = dict(optimize=True, progressive=True)
         elif fmt == 'WEBP':
-            extra_save_args = dict(method=4)
+            extra_save_args = dict(method=4, lossless=True)
         elif fmt == 'AVIF':
             extra_save_args = dict(speed=6)
         elif fmt == 'PNG':
@@ -433,6 +463,8 @@ class Pixiq:
             extra_save_args=result.extra_save_args.copy(),
             hash_type=result.hash_type,
             tile_size=result.tile_size,
+            filename=result.filename,
+            content_type=result.content_type,
         )
 
         # Save to output if specified
